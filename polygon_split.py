@@ -345,10 +345,10 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
                 summary_df['Area Deviation (%)'].min().round(2)
             ]
         })
-        
+
         st.write(stats_df)
         st.write("\nDetailed Subdivision Results:")
-        st.write(summary_df)
+        st.dataframe(summary_df)
         
         fig = result_gdf.plot(
             column='subdivision_id',
@@ -435,7 +435,7 @@ def main():
 
 
                 st.write("Original Shapefile Preview:")
-                st.dataframe(gdf_preview)
+                st.dataframe(gdf_preview.drop(columns="geometry"))
                 
                 fig = gdf.plot(figsize=(10, 10))
                 st.pyplot(fig.figure)
