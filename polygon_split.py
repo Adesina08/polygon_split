@@ -25,6 +25,9 @@ import logging
 # Import type hints for better code documentation
 from typing import List, Union, Tuple, Optional
 
+# Automatically recreate missing .shx files when reading shapefiles
+os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
+
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
 # Create a logger instance for this module
@@ -407,8 +410,12 @@ def main():
                         st.error(f"Failed to read shapefile: {str(e)}")
                         raise
 
+                # Convert geometry to WKT strings for a safe preview in Streamlit
+                gdf_preview = gdf.copy()
+                gdf_preview["geometry"] = gdf_preview.geometry.to_wkt()
+
                 st.write("Original Shapefile Preview:")
-                st.write(gdf)
+                st.dataframe(gdf_preview)
                 
                 fig = gdf.plot(figsize=(10, 10))
                 st.pyplot(fig.figure)
