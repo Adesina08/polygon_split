@@ -479,13 +479,12 @@ def main():
                         st.error(f"Failed to read shapefile: {str(e)}")
                         raise
 
-                # Convert geometry to WKT strings for a safe preview in Streamlit
+                # Prepare a safe preview by converting geometries to WKT strings
                 gdf_preview = gdf.copy()
-                # Safely convert geometries to WKT; handle missing geometries
                 gdf_preview["geometry_wkt"] = gdf_preview.geometry.apply(
                     lambda geom: geom.wkt if geom is not None else None
                 )
-
+                gdf_preview = gdf_preview.drop(columns="geometry")
 
                 st.write("Original Shapefile Preview:")
                 safe_ui(st.dataframe, gdf_preview.drop(columns=["geometry"], errors="ignore"))
