@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 # Import library for logging
 import logging
+# Import regular expressions for filename sanitation
+import re
 # Import type hints for better code documentation
 from typing import List, Union, Tuple, Optional
 
@@ -80,6 +82,20 @@ def validate_zip_contents(zip_file) -> Tuple[bool, str]:
         return True, base_name
     except Exception as e:
         return False, f"Error validating ZIP contents: {str(e)}"
+
+
+def find_column(gdf: gpd.GeoDataFrame, candidates: List[str]) -> Optional[str]:
+    """Return the first matching column name from candidates (case-insensitive)."""
+    lower_cols = {col.lower(): col for col in gdf.columns}
+    for name in candidates:
+        if name.lower() in lower_cols:
+            return lower_cols[name.lower()]
+    return None
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize text for safe filenames."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(name))
 
 
 def project_point(point: Point, angle_deg: float) -> float:
@@ -420,6 +436,38 @@ def main():
                 
                 fig = gdf.plot(figsize=(10, 10))
                 st.pyplot(fig.figure)
+                state_col = find_column(gdf, ["state", "state_name", "statename"])
+                lga_col = find_column(gdf, ["lga", "lga_name", "lganame"])
+                ward_col = find_column(gdf, ["ward", "ward_name", "wardname"])
+                if not all([state_col, lga_col, ward_col]):
+                    st.error("Shapefile must contain 'state', 'lga', and 'ward' columns.")
+                    return
+
+                state_options = sorted(gdf[state_col].dropna().unique())
+                selected_states = st.multiselect(
+                    "Select States", state_options, default=state_options
+                )
+                filtered_gdf = gdf[gdf[state_col].isin(selected_states)]
+
+                lga_options = sorted(filtered_gdf[lga_col].dropna().unique())
+                select_all_lgas = st.checkbox("Select all LGAs", value=True)
+                if select_all_lgas:
+                    selected_lgas = lga_options
+                else:
+                    selected_lgas = st.multiselect(
+                        "Select LGAs", lga_options, default=lga_options
+                    )
+                filtered_gdf = filtered_gdf[filtered_gdf[lga_col].isin(selected_lgas)]
+
+                ward_options = sorted(filtered_gdf[ward_col].dropna().unique())
+                select_all_wards = st.checkbox("Select all Wards", value=True)
+                if select_all_wards:
+                    selected_wards = ward_options
+                else:
+                    selected_wards = st.multiselect(
+                        "Select Wards", ward_options, default=ward_options
+                    )
+                filtered_gdf = filtered_gdf[filtered_gdf[ward_col].isin(selected_wards)]
 
                 num_subdivisions = st.number_input(
                     "Number of equal-area subdivisions per polygon",
@@ -431,15 +479,29 @@ def main():
 
                 if st.button("Process Shapefile"):
                     with st.spinner("Creating equal-area subdivisions..."):
-                        result_gdf = process_shapefile(gdf, num_subdivisions)
-                        
+                        result_gdf = process_shapefile(filtered_gdf, num_subdivisions)
+
                         if result_gdf is None:
                             return
 
-                        output_zip_path = os.path.join(temp_dir, f"{base_name}_subdivided.zip")
+                        for _, row in result_gdf.iterrows():
+                            lga_val = sanitize_filename(row[lga_col])
+                            ward_val = sanitize_filename(row[ward_col])
+                            subdiv_id = row["subdivision_id"]
+                            filename_base = f"{lga_val}_{ward_val}_{subdiv_id}"
+                            row_data = row.drop(labels="geometry").to_dict()
+                            single_gdf = gpd.GeoDataFrame(
+                                [row_data], geometry=[row.geometry], crs=result_gdf.crs
+                            )
+                            single_gdf.to_file(
+                                os.path.join(output_dir, f"{filename_base}.shp")
+                            )
+
+                        output_zip_path = os.path.join(
+                            temp_dir, f"{base_name}_subdivided.zip"
+                        )
                         with zipfile.ZipFile(output_zip_path, "w") as zipf:
-                            result_gdf.to_file(os.path.join(output_dir, f"{base_name}_subdivided.shp"))
-                            for file in Path(output_dir).glob(f"{base_name}_subdivided.*"):
+                            for file in Path(output_dir).iterdir():
                                 zipf.write(file, file.name)
 
                         with open(output_zip_path, "rb") as f:
