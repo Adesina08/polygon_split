@@ -29,6 +29,8 @@ from typing import List, Union, Tuple, Optional
 import time
 from contextlib import suppress
 import matplotlib.pyplot as plt
+from tornado.websocket import WebSocketClosedError
+from tornado.iostream import StreamClosedError
 
 # Automatically recreate missing .shx files when reading shapefiles
 os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
@@ -37,6 +39,19 @@ os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
 logging.basicConfig(level=logging.INFO)
 # Create a logger instance for this module
 logger = logging.getLogger(__name__)
+
+# --- Suppress Tornado/asyncio WebSocketClosedError noise ---
+class _SuppressWSClosed(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "WebSocketClosedError" not in msg and "StreamClosedError" not in msg
+
+for name in ("asyncio", "tornado", "tornado.websocket", "tornado.iostream"):
+    logging.getLogger(name).addFilter(_SuppressWSClosed())
+
+logging.getLogger("tornado").setLevel(logging.ERROR)
+logging.getLogger("asyncio").setLevel(logging.ERROR)
+
 
 
 # Prevent stale runs from writing to the UI
@@ -49,6 +64,14 @@ def new_run_token():
 def is_current_run(token):
     return st.session_state.get("_run_token") == token
 
+
+
+def safe_ui(call, *args, **kwargs):
+    try:
+        return call(*args, **kwargs)
+    except (WebSocketClosedError, StreamClosedError):
+        logger.info("UI update skipped: client disconnected.")
+        return None
 
 def setup_streamlit_page():
     """Configure the Streamlit page with title and instructions."""
@@ -314,8 +337,8 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
                 return None
 
             if idx % step == 0:
-                status_text.text(f"Processing polygon {idx+1} of {n}…")
-                progress_bar.progress((idx + 1) / n)
+                safe_ui(status_text.text, f"Processing polygon {idx+1} of {n}…")
+                safe_ui(progress_bar.progress, (idx + 1) / n)
 
             geometry = row.geometry
             if geometry is None or geometry.is_empty:
@@ -345,8 +368,8 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
                         new_attributes.append(attributes)
 
         # Final update
-        progress_bar.progress(1.0)
-        status_text.text("Finishing up…")
+        safe_ui(progress_bar.progress, 1.0)
+        safe_ui(status_text.text, "Finishing up…")
 
         result_gdf = gpd.GeoDataFrame(
             new_attributes, geometry=new_geometries, crs=input_gdf.crs
@@ -373,10 +396,10 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
             ]
         })
 
-        st.dataframe(stats_df, height=220)
+        safe_ui(st.dataframe, stats_df, height=220)
 
         st.write("\nDetailed Subdivision Results:")
-        st.dataframe(summary_df, height=420)
+        safe_ui(st.dataframe, summary_df, height=420)
 
         fig, ax = plt.subplots(figsize=(12, 12))
         result_gdf.plot(
@@ -386,7 +409,7 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
             edgecolor='black',
             linewidth=0.5
         )
-        st.pyplot(fig)
+        safe_ui(st.pyplot, fig)
         plt.close(fig)
 
         return result_gdf
@@ -465,11 +488,11 @@ def main():
 
 
                 st.write("Original Shapefile Preview:")
-                st.dataframe(gdf_preview.drop(columns=["geometry"], errors="ignore"))
+                safe_ui(st.dataframe, gdf_preview.drop(columns=["geometry"], errors="ignore"))
 
                 fig, ax = plt.subplots(figsize=(10, 10))
                 gdf.plot(ax=ax)
-                st.pyplot(fig)
+                safe_ui(st.pyplot, fig)
                 plt.close(fig)
                 state_col = find_column(gdf, ["state", "state_name", "statename"])
                 lga_col = find_column(gdf, ["lga", "lga_name", "lganame"])
