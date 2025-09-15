@@ -26,6 +26,9 @@ import logging
 import re
 # Import type hints for better code documentation
 from typing import List, Union, Tuple, Optional
+import time
+from contextlib import suppress
+import matplotlib.pyplot as plt
 
 # Automatically recreate missing .shx files when reading shapefiles
 os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
@@ -34,6 +37,17 @@ os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
 logging.basicConfig(level=logging.INFO)
 # Create a logger instance for this module
 logger = logging.getLogger(__name__)
+
+
+# Prevent stale runs from writing to the UI
+def new_run_token():
+    token = str(time.time())
+    st.session_state["_run_token"] = token
+    return token
+
+
+def is_current_run(token):
+    return st.session_state.get("_run_token") == token
 
 
 def setup_streamlit_page():
@@ -289,27 +303,37 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
     try:
         new_geometries = []
         new_attributes = []
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(0.0)
         status_text = st.empty()
-        
+
+        n = len(input_gdf)
+        step = max(1, n // 100)
+
         for idx, row in input_gdf.iterrows():
-            status_text.text(f"Processing polygon {idx+1} of {len(input_gdf)}...")
+            if not is_current_run(st.session_state.get("_run_token")):
+                return None
+
+            if idx % step == 0:
+                status_text.text(f"Processing polygon {idx+1} of {n}…")
+                progress_bar.progress((idx + 1) / n)
+
             geometry = row.geometry
-            
+            if geometry is None or geometry.is_empty:
+                continue
             if not geometry.is_valid:
                 geometry = geometry.buffer(0)
-            
+
             subdivided = split_polygon_equally(geometry, num_subdivisions)
-            
+
             if subdivided:
                 total_area = geometry.area
                 target_area = total_area / num_subdivisions
-                
+
                 for sub_idx, sub_geom in enumerate(subdivided, 1):
                     if not sub_geom.is_empty and sub_geom.is_valid:
                         sub_geom = sub_geom.buffer(0)
                         new_geometries.append(sub_geom)
-                        
+
                         attributes = row.drop("geometry").to_dict()
                         attributes["original_id"] = idx + 1
                         attributes["subdivision_id"] = sub_idx
@@ -317,14 +341,17 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
                         attributes["area_deviation"] = ((sub_geom.area - target_area) / target_area) * 100
                         attributes["target_area"] = target_area
                         attributes["area_difference"] = sub_geom.area - target_area
+
                         new_attributes.append(attributes)
-            
-            progress_bar.progress((idx + 1) / len(input_gdf))
+
+        # Final update
+        progress_bar.progress(1.0)
+        status_text.text("Finishing up…")
 
         result_gdf = gpd.GeoDataFrame(
             new_attributes, geometry=new_geometries, crs=input_gdf.crs
         )
-        
+
         st.write("\nSubdivision Analysis:")
         summary_df = pd.DataFrame({
             'Original Polygon ID': result_gdf['original_id'],
@@ -334,7 +361,7 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
             'Area Difference (sq units)': result_gdf['area_difference'].round(4),
             'Area Deviation (%)': result_gdf['area_deviation'].round(2)
         })
-        
+
         st.write("\nStatistical Summary:")
         stats_df = pd.DataFrame({
             'Metric': ['Mean Area', 'Std Dev Area', 'Max Deviation', 'Min Deviation'],
@@ -346,21 +373,24 @@ def process_shapefile(input_gdf: gpd.GeoDataFrame, num_subdivisions: int) -> Opt
             ]
         })
 
-        st.write(stats_df)
+        st.dataframe(stats_df, height=220)
+
         st.write("\nDetailed Subdivision Results:")
-        st.dataframe(summary_df)
-        
-        fig = result_gdf.plot(
+        st.dataframe(summary_df, height=420)
+
+        fig, ax = plt.subplots(figsize=(12, 12))
+        result_gdf.plot(
+            ax=ax,
             column='subdivision_id',
             cmap='tab20',
-            figsize=(12, 12),
             edgecolor='black',
             linewidth=0.5
         )
-        st.pyplot(fig.figure)
-        
+        st.pyplot(fig)
+        plt.close(fig)
+
         return result_gdf
-        
+
     except Exception as e:
         logger.error(f"Error processing shapefile: {str(e)}")
         st.error(f"Error during processing: {str(e)}")
@@ -435,10 +465,12 @@ def main():
 
 
                 st.write("Original Shapefile Preview:")
-                st.dataframe(gdf_preview.drop(columns="geometry"))
-                
-                fig = gdf.plot(figsize=(10, 10))
-                st.pyplot(fig.figure)
+                st.dataframe(gdf_preview.drop(columns=["geometry"], errors="ignore"))
+
+                fig, ax = plt.subplots(figsize=(10, 10))
+                gdf.plot(ax=ax)
+                st.pyplot(fig)
+                plt.close(fig)
                 state_col = find_column(gdf, ["state", "state_name", "statename"])
                 lga_col = find_column(gdf, ["lga", "lga_name", "lganame"])
                 ward_col = find_column(gdf, ["ward", "ward_name", "wardname"])
@@ -481,7 +513,12 @@ def main():
                 )
 
                 if st.button("Process Shapefile"):
+                    run_token = new_run_token()
                     with st.spinner("Creating equal-area subdivisions..."):
+                        if not is_current_run(run_token):
+                            st.info("Run cancelled.")
+                            st.stop()
+
                         result_gdf = process_shapefile(filtered_gdf, num_subdivisions)
 
                         if result_gdf is None:
@@ -533,6 +570,7 @@ def main():
                             file_name=f"{base_name}_subdivided_kml.zip",
                             mime="application/zip",
                         )
+                        st.stop()
 
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
