@@ -141,10 +141,60 @@ def create_split_line(polygon: Union[Polygon, MultiPolygon], split_angle: float,
     return LineString([(x1, y1), (x2, y2)])
 
 
+def find_best_split(
+    poly: Union[Polygon, MultiPolygon],
+    angle: float,
+    target_area: float,
+    min_proj: float,
+    max_proj: float,
+    iterations: int = 50,
+    tolerance: float = 1e-6,
+) -> Tuple[Optional[Polygon], Optional[Polygon]]:
+    """Find a split line that divides ``poly`` close to ``target_area``.
+
+    A binary search is performed between ``min_proj`` and ``max_proj`` to
+    determine the offset of the split line that yields an area closest to the
+    desired target.  The function returns the polygon piece nearest to the
+    target and the remaining polygon.  If a valid split cannot be found,
+    ``(None, None)`` is returned.
+    """
+    low, high = min_proj, max_proj
+    best_part = None
+    best_remaining = None
+
+    for _ in range(iterations):
+        offset = (low + high) / 2
+        split_line = create_split_line(poly, angle, offset)
+        try:
+            parts = split(poly, split_line)
+        except Exception:
+            break
+
+        if not hasattr(parts, "geoms"):
+            break
+
+        valid_parts = [p for p in parts.geoms if p.is_valid and not p.is_empty]
+        if not valid_parts:
+            break
+
+        part = min(valid_parts, key=lambda p: abs(p.area - target_area))
+        area_diff = part.area - target_area
+        best_part = part
+        best_remaining = poly.difference(part)
+
+        if abs(area_diff) / target_area < tolerance:
+            break
+
+        if area_diff < 0:
+            low = offset
+        else:
+            high = offset
+
+    return best_part, best_remaining
+
+
 def split_polygon_equally(geometry: Union[Polygon, MultiPolygon], n_parts: int) -> List[Union[Polygon, MultiPolygon]]:
-    """
-    Split a polygon into n equal parts using an intelligent shape-based approach.
-    """
+    """Split a polygon into ``n_parts`` with approximately equal areas."""
     if n_parts == 1:
         return [geometry]
 
@@ -158,7 +208,7 @@ def split_polygon_equally(geometry: Union[Polygon, MultiPolygon], n_parts: int) 
     total_area = geometry.area
     target_area = total_area / n_parts
     
-    result = []
+    result: List[Union[Polygon, MultiPolygon]] = []
     remaining_poly = geometry
     remaining_parts = n_parts
 
@@ -167,45 +217,25 @@ def split_polygon_equally(geometry: Union[Polygon, MultiPolygon], n_parts: int) 
             best_angle = analyze_polygon_shape(remaining_poly)
             projection_angle = best_angle + 90
             min_proj, max_proj = get_projection_bounds(remaining_poly, projection_angle)
-            offsets = np.linspace(min_proj, max_proj, 40)
-            
-            best_split = None
-            min_area_diff = float('inf')
-            best_remaining = None
-            
-            for offset in offsets:
-                split_line = create_split_line(remaining_poly, best_angle, offset)
-                try:
-                    split_parts = split(remaining_poly, split_line)
-                    if not hasattr(split_parts, 'geoms'):
-                        continue
-                        
-                    for part in split_parts.geoms:
-                        if not part.is_valid or part.is_empty:
-                            continue
-                            
-                        area_diff = abs(part.area - target_area)
-                        if area_diff < min_area_diff:
-                            min_area_diff = area_diff
-                            best_split = part
-                            best_remaining = remaining_poly.difference(part)
-                except:
-                    continue
-            
-            if best_split and best_remaining:
+
+            best_split, best_remaining = find_best_split(
+                remaining_poly, best_angle, target_area, min_proj, max_proj
+            )
+
+            if best_split and best_remaining and not best_split.is_empty:
                 result.append(best_split)
                 remaining_poly = best_remaining
                 remaining_parts -= 1
             else:
                 break
-                
+
         except Exception as e:
             logger.warning(f"Error in splitting: {str(e)}")
             break
-    
+
     if remaining_poly and remaining_poly.is_valid and not remaining_poly.is_empty:
         result.append(remaining_poly)
-    
+
     result = [geom.buffer(0) for geom in result if geom is not None and not geom.is_empty]
     
     max_iterations = 20
