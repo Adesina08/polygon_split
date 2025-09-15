@@ -412,7 +412,8 @@ def main():
 
                 # Convert geometry to WKT strings for a safe preview in Streamlit
                 gdf_preview = gdf.copy()
-                gdf_preview["geometry"] = gdf_preview.geometry.to_wkt()
+                gdf_preview["geometry_wkt"] = gdf_preview.geometry.apply(lambda geom: geom.wkt)
+
 
                 st.write("Original Shapefile Preview:")
                 st.dataframe(gdf_preview)
