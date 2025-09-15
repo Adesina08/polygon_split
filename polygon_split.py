@@ -485,24 +485,39 @@ def main():
                             return
 
                         for _, row in result_gdf.iterrows():
+                            state_val = sanitize_filename(row[state_col])
                             lga_val = sanitize_filename(row[lga_col])
                             ward_val = sanitize_filename(row[ward_col])
                             subdiv_id = row["subdivision_id"]
-                            filename_base = f"{lga_val}_{ward_val}_{subdiv_id}"
+                            filename_base = f"{lga_val}_{ward_val}_{subdiv_id}.kml"
+
+                            state_dir = os.path.join(output_dir, state_val)
+                            os.makedirs(state_dir, exist_ok=True)
+
                             row_data = row.drop(labels="geometry").to_dict()
                             single_gdf = gpd.GeoDataFrame(
                                 [row_data], geometry=[row.geometry], crs=result_gdf.crs
                             )
+                            try:
+                                single_gdf = (
+                                    single_gdf.to_crs(epsg=4326)
+                                    if single_gdf.crs is not None
+                                    else single_gdf
+                                )
+                            except Exception:
+                                pass
+
                             single_gdf.to_file(
-                                os.path.join(output_dir, f"{filename_base}.shp")
+                                os.path.join(state_dir, filename_base), driver="KML"
                             )
 
                         output_zip_path = os.path.join(
-                            temp_dir, f"{base_name}_subdivided.zip"
+                            temp_dir, f"{base_name}_subdivided_kml.zip"
                         )
                         with zipfile.ZipFile(output_zip_path, "w") as zipf:
-                            for file in Path(output_dir).iterdir():
-                                zipf.write(file, file.name)
+                            for file in Path(output_dir).rglob("*"):
+                                if file.is_file():
+                                    zipf.write(file, file.relative_to(output_dir))
 
                         with open(output_zip_path, "rb") as f:
                             zip_data = f.read()
@@ -510,9 +525,9 @@ def main():
                         st.success("Processing complete! Download your results below.")
 
                         st.download_button(
-                            label="Download Subdivided Shapefile",
+                            label="Download Subdivided Wards (KML)",
                             data=zip_data,
-                            file_name=f"{base_name}_subdivided.zip",
+                            file_name=f"{base_name}_subdivided_kml.zip",
                             mime="application/zip",
                         )
 
